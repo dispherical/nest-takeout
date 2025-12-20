@@ -148,7 +148,7 @@ async function processZipJob(jobId, username) {
   const timestamp = Date.now()
   const zipPath = path.join(baseDir, `${username}-${timestamp}.zip`)
   await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'processing', filePath: zipPath, progress: 0 } })
-  const srcDir = path.join('/tmp/home', username)
+  const srcDir = path.join('/home', username)
   if (!fs.existsSync(srcDir)) {
     await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: 'source directory not found' } })
     return
