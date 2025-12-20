@@ -1,0 +1,39 @@
+{% layout 'parent.liquid' %}
+{% block %}
+<h1>Dashboard</h1>
+<div>
+  <p>Name: {{ user.name }}</p>
+  <p>Email: {{ user.email }}</p>
+  <p>User ID: {{ user.sub }}</p>
+  <p>Username: {{ user.preferred_username }}</p>
+</div>
+<div>
+  <a href="/logout">Logout</a>
+</div>
+
+<div>
+  <form method="post" action="/zip/start">
+    <button type="submit">Create Home ZIP</button>
+  </form>
+</div>
+
+{% if job %}
+<div>
+  <p>Status: {{ job.status }}</p>
+  <p>Progress: {{ job.progress }}%</p>
+  {% if job.status == 'complete' %}
+  <a href="/zip/download">Download ZIP</a>
+  <p>Expires: {{ job.expiresAt }}</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if job %}
+{% if job.status == 'queued' or job.status == 'processing' %}
+<script>
+setTimeout(function(){ location.reload() }, 3000)
+</script>
+{% endif %}
+{% endif %}
+
+{% endblock %}

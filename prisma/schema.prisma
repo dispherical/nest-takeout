@@ -1,0 +1,61 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String   @id
+  sid       String   @unique
+  data      String
+  expiresAt   DateTime
+}
+
+model Container {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  serverId    String
+  status      String
+  tailscaleIp String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PortForward {
+  id        String   @id @default(cuid())
+  userId    String
+  serverId  String
+  port      String
+  protocol  String
+  listenIp  String
+  createdAt DateTime @default(now())
+  
+  @@unique([serverId, port, protocol, listenIp])
+}
+
+model UserProfile {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  tailscaleAuthKey   String?
+  sshPublicKeys      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model ZipJob {
+  id          String   @id @default(cuid())
+  username    String
+  status      String
+  progress    Int      @default(0)
+  filePath    String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+  expiresAt   DateTime?
+  error       String?
+
+  @@index([username, status])
+}
