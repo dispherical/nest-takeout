@@ -67,7 +67,7 @@ async function initOIDC() {
   oidcClient = new issuer.Client({
     client_id: process.env.AUTH_CLIENT_ID,
     client_secret: process.env.AUTH_CLIENT_SECRET,
-    redirect_uris: [process.env.AUTH_REDIRECT_URI || 'http://takeout.hackclub.app/auth/callback'],
+    redirect_uris: [process.env.AUTH_REDIRECT_URI || 'http://lg.hackclub.app/auth/callback'],
     response_types: ['code'],
     id_token_signed_response_alg: process.env.AUTH_ID_TOKEN_ALG || 'HS256'
   })
@@ -98,7 +98,7 @@ app.get('/auth/callback', async (req, res, next) => {
     const params = oidcClient.callbackParams(req)
     const state = req.session.oauth_state
     const nonce = req.session.oauth_nonce
-    const tokenSet = await oidcClient.callback(process.env.AUTH_REDIRECT_URI || 'http://takeout.hackclub.app/auth/callback', params, { state, nonce })
+    const tokenSet = await oidcClient.callback(process.env.AUTH_REDIRECT_URI || 'http://lg.hackclub.app/auth/callback', params, { state, nonce })
     const userinfo = await oidcClient.userinfo(tokenSet.access_token)
     req.session.user = {
       sub: tokenSet.claims().sub,
