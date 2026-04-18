@@ -13,9 +13,9 @@ const path = require('path')
 const { spawn } = require('child_process')
 const util = require('util')
 const exec = util.promisify(require('child_process').exec)
+const queue = require('./queue')
 
 const startdir = "/mnt/oldnest/home"
-
 
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
@@ -56,6 +56,7 @@ app.use(session({
   ),
   proxy: true
 }))
+
 app.get('/auth/login', (req, res) => {
   res.render('login')
 })
@@ -82,11 +83,11 @@ app.post('/auth/verify', async (req, res) => {
   }
 
   const workDir = await fs.promises.mkdtemp(path.join(process.cwd(), 'tmp', 'ssh-auth-'))
-  
+
   try {
     const dataFile = path.join(workDir, 'data')
     await fs.promises.writeFile(dataFile, expectedChallenge)
-    
+
     let sigStr = signature.trim()
     const match = sigStr.match(/-----BEGIN SSH SIGNATURE-----[\s\S]*-----END SSH SIGNATURE-----/)
     if (match) sigStr = match[0]
@@ -101,12 +102,12 @@ app.post('/auth/verify', async (req, res) => {
       .filter(line => line && !line.startsWith('#'))
       .map(line => `${username} ${line}`)
       .join('\n')
-      
+
     const allowedSignersFile = path.join(workDir, 'allowed_signers')
     await fs.promises.writeFile(allowedSignersFile, allowedSigners)
 
     await exec(`ssh-keygen -Y verify -f ${allowedSignersFile} -I ${username} -n file -s ${sigFile} - < ${dataFile}`)
-    
+
     req.session.user = {
       preferred_username: username,
       email: `${username}@nest.hackclub.app`,
@@ -115,9 +116,10 @@ app.post('/auth/verify', async (req, res) => {
     delete req.session.challenge
     res.redirect('/dashboard')
   } catch (err) {
+    console.error('verify failed:', err.stderr?.toString(), err.stdout?.toString())
     res.status(403).send('Invalid signature')
   } finally {
-    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {})
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => { })
   }
 })
 
@@ -131,31 +133,40 @@ app.get('/me', (req, res) => {
   if (!req.session.user) return res.status(401).json({ error: 'unauthorized' })
   res.json(req.session.user)
 })
+
 function requireAuth(req, res, next) {
   if (!req.session.user) return res.redirect('/auth/login')
   next()
 }
+
 app.get('/dashboard', requireAuth, async (req, res) => {
   const username = req.session.user.preferred_username || ''
   let job = null
+  let position = null
+  let queueDepth = null
   if (username) {
     job = await prisma.zipJob.findFirst({ where: { username }, orderBy: { createdAt: 'desc' } })
+    if (job && (job.status === 'queued' || job.status === 'processing')) {
+      position = await queue.getPosition(job.id)
+      queueDepth = (await queue.getStats()).total
+    }
   }
-  res.render('dashboard', { user: req.session.user, job })
+  res.render('dashboard', { user: req.session.user, job, position, queueDepth })
 })
 
 function ensureDir(p) {
   return fs.promises.mkdir(p, { recursive: true })
 }
 
-async function processZipJob(jobId, username) {
+async function processZipJob(job) {
+  const { id: jobId, username } = job
   const baseDir = path.join(process.cwd(), 'tmp', 'zips')
   await ensureDir(baseDir)
   const timestamp = Date.now()
-  const archivePath = path.join(baseDir, `${username}-${timestamp}.tar.gz`)
+  const archivePath = path.join(baseDir, `${username}-${timestamp}.tar`)
   await prisma.zipJob.update({
     where: { id: jobId },
-    data: { status: 'processing', filePath: archivePath, progress: 0 }
+    data: { filePath: archivePath, progress: 0 }
   })
   const srcDir = path.join(startdir, username)
   if (!fs.existsSync(srcDir)) {
@@ -166,25 +177,45 @@ async function processZipJob(jobId, username) {
     console.error('source directory not found')
     return
   }
+
+  const excludes = [
+    'node_modules', '.npm', '.yarn/cache', '.pnpm-store',
+    '.bun/install/cache', '.cargo/registry', '.rustup',
+    '__pycache__', '.venv', 'venv',
+    '.cache', '.local/share/Trash'
+  ]
+  const excludeArgs = excludes.map(p => `--exclude=${p}`)
+
+  let totalBytes = null
+  exec(`du -sb ${excludeArgs.join(' ')} ${JSON.stringify(srcDir)}`)
+    .then(({ stdout }) => {
+      const n = parseInt(stdout.split(/\s+/)[0], 10)
+      if (Number.isFinite(n) && n > 0) totalBytes = n
+    })
+    .catch(() => { })
+
+  const poll = setInterval(async () => {
+    try {
+      const st = await fs.promises.stat(archivePath)
+      if (totalBytes) {
+        const pct = Math.min(99, Math.floor((st.size / totalBytes) * 100))
+        await prisma.zipJob.update({ where: { id: jobId }, data: { progress: pct } })
+      }
+    } catch { }
+  }, 3000)
+
   return new Promise((resolve) => {
     const tarProc = spawn('tar', [
-      '--exclude=node_modules',
-      '--exclude=.npm',
-      '--exclude=.yarn/cache',
-      '--exclude=.pnpm-store',
-      '--exclude=.bun/install/cache',
-      '--exclude=.cargo/registry',
-      '--exclude=.rustup',
-
-      '--exclude=__pycache__',
-      '--exclude=.venv',
-      '--exclude=venv',
-
-      '-czf', archivePath,
+      '--warning=no-file-changed',
+      '--warning=no-file-removed',
+      '--ignore-failed-read',
+      ...excludeArgs,
+      '-cf', archivePath,
       '-C', startdir, username
     ])
 
     tarProc.on('error', async (e) => {
+      clearInterval(poll)
       await prisma.zipJob.update({
         where: { id: jobId },
         data: { status: 'error', error: String(e?.message || e) }
@@ -194,7 +225,8 @@ async function processZipJob(jobId, username) {
     })
 
     tarProc.on('exit', async (code, signal) => {
-      if (code === 0) {
+      clearInterval(poll)
+      if (code === 0 || code === 1) {
         const now = new Date()
         const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000)
         await prisma.zipJob.update({
@@ -224,8 +256,8 @@ app.post('/zip/start', requireAuth, async (req, res) => {
   if (!username) return res.redirect('/dashboard')
   const existing = await prisma.zipJob.findFirst({ where: { username }, orderBy: { createdAt: 'desc' } })
   if (hasActiveJob(existing)) return res.redirect('/dashboard')
-  const job = await prisma.zipJob.create({ data: { username, status: 'queued', progress: 0 } })
-  processZipJob(job.id, username).catch(() => { })
+  await prisma.zipJob.create({ data: { username, status: 'queued', progress: 0 } })
+  queue.tick()
   res.redirect('/dashboard')
 })
 
@@ -234,7 +266,22 @@ app.get('/zip/status', requireAuth, async (req, res) => {
   if (!username) return res.status(400).json({ error: 'missing username' })
   const job = await prisma.zipJob.findFirst({ where: { username }, orderBy: { createdAt: 'desc' } })
   if (!job) return res.json({ status: 'none' })
-  res.json({ status: job.status, progress: job.progress, expiresAt: job.expiresAt, completedAt: job.completedAt })
+  const out = {
+    status: job.status,
+    progress: job.progress,
+    expiresAt: job.expiresAt,
+    completedAt: job.completedAt,
+    error: job.error
+  }
+  if (job.status === 'queued' || job.status === 'processing') {
+    const [position, stats] = await Promise.all([
+      queue.getPosition(job.id),
+      queue.getStats()
+    ])
+    out.position = position
+    out.queueDepth = stats.total
+  }
+  res.json(out)
 })
 
 app.get('/zip/download', requireAuth, async (req, res) => {
@@ -251,7 +298,7 @@ app.get('/zip/download', requireAuth, async (req, res) => {
     return res.redirect('/dashboard')
   }
   if (!fs.existsSync(job.filePath)) return res.redirect('/dashboard')
-  res.download(job.filePath, `${username}-home.tar.gz`)
+  res.download(job.filePath, `${username}-home.tar`)
 })
 
 async function cleanupExpiredZips() {
@@ -268,6 +315,10 @@ async function cleanupExpiredZips() {
 setInterval(() => {
   cleanupExpiredZips().catch(() => { })
 }, 60 * 60 * 1000)
+
+queue.setProcessor(processZipJob)
+queue.recover().then(() => queue.tick())
+
 const port = process.env.PORT || 3000
 app.listen(port, () => {
   console.log(`nest export is listening on port ${port}`)
