@@ -8,11 +8,14 @@ const prisma = new PrismaClient()
 const crypto = require('crypto');
 const session = require('express-session');
 const { PrismaSessionStore } = require('@quixo3/prisma-session-store');
-let Issuer
-let generators
 const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
+const util = require('util')
+const exec = util.promisify(require('child_process').exec)
+
+const startdir = "/mnt/oldnest/home"
+
 
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
@@ -53,65 +56,68 @@ app.use(session({
   ),
   proxy: true
 }))
-let oidcClient
-let oidcInitialized = false
-async function initOIDC() {
-  if (!Issuer || !generators) {
-    const mod = await import('openid-client')
-    Issuer = mod.Issuer
-    generators = mod.generators
-  }
-  const baseIssuer = process.env.AUTH_ISSUER || 'https://identity.hackclub.app'
-  const discovery = process.env.AUTH_DISCOVERY_URL || `${baseIssuer}/.well-known/openid-configuration`
-  const issuer = await Issuer.discover(discovery)
-  oidcClient = new issuer.Client({
-    client_id: process.env.AUTH_CLIENT_ID,
-    client_secret: process.env.AUTH_CLIENT_SECRET,
-    redirect_uris: [process.env.AUTH_REDIRECT_URI || 'http://lg.hackclub.app/auth/callback'],
-    response_types: ['code'],
-    id_token_signed_response_alg: process.env.AUTH_ID_TOKEN_ALG || 'HS256'
-  })
-  oidcInitialized = true
-}
-
-app.get('/auth/login', async (req, res, next) => {
-  try {
-    if (!oidcInitialized) await initOIDC()
-    const state = generators.state()
-    const nonce = generators.nonce()
-    req.session.oauth_state = state
-    req.session.oauth_nonce = nonce
-    const authUrl = oidcClient.authorizationUrl({
-      scope: 'openid profile email',
-      state,
-      nonce
-    })
-    res.redirect(authUrl)
-  } catch (e) {
-    next(e)
-  }
+app.get('/auth/login', (req, res) => {
+  res.render('login')
 })
 
-app.get('/auth/callback', async (req, res, next) => {
+app.post('/auth/challenge', (req, res) => {
+  const { username } = req.body
+  if (!username || typeof username !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(username)) return res.redirect('/auth/login')
+  const challenge = crypto.randomBytes(32).toString('hex')
+  req.session.challenge = challenge
+  res.render('challenge', { username, challenge })
+})
+
+app.post('/auth/verify', async (req, res) => {
+  const { username, signature } = req.body
+  const expectedChallenge = req.session.challenge
+
+  if (!username || typeof username !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(username) || !signature || !expectedChallenge) {
+    return res.status(400).send('Missing required fields')
+  }
+
+  const authKeysPath = path.join(startdir, username, '.ssh', 'authorized_keys')
+  if (!fs.existsSync(authKeysPath)) {
+    return res.status(403).send('User has no SSH keys')
+  }
+
+  const workDir = await fs.promises.mkdtemp(path.join(process.cwd(), 'tmp', 'ssh-auth-'))
+  
   try {
-    if (!oidcInitialized) await initOIDC()
-    const params = oidcClient.callbackParams(req)
-    const state = req.session.oauth_state
-    const nonce = req.session.oauth_nonce
-    const tokenSet = await oidcClient.callback(process.env.AUTH_REDIRECT_URI || 'http://lg.hackclub.app/auth/callback', params, { state, nonce })
-    const userinfo = await oidcClient.userinfo(tokenSet.access_token)
+    const dataFile = path.join(workDir, 'data')
+    await fs.promises.writeFile(dataFile, expectedChallenge)
+    
+    let sigStr = signature.trim()
+    const match = sigStr.match(/-----BEGIN SSH SIGNATURE-----[\s\S]*-----END SSH SIGNATURE-----/)
+    if (match) sigStr = match[0]
+
+    const sigFile = path.join(workDir, 'data.sig')
+    await fs.promises.writeFile(sigFile, sigStr)
+
+    const keys = await fs.promises.readFile(authKeysPath, 'utf8')
+    const allowedSigners = keys
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'))
+      .map(line => `${username} ${line}`)
+      .join('\n')
+      
+    const allowedSignersFile = path.join(workDir, 'allowed_signers')
+    await fs.promises.writeFile(allowedSignersFile, allowedSigners)
+
+    await exec(`ssh-keygen -Y verify -f ${allowedSignersFile} -I ${username} -n file -s ${sigFile} - < ${dataFile}`)
+    
     req.session.user = {
-      sub: tokenSet.claims().sub,
-      email: userinfo.email,
-      name: userinfo.name || userinfo.preferred_username || '',
-      picture: userinfo.picture || '',
-      ...userinfo
+      preferred_username: username,
+      email: `${username}@nest.hackclub.app`,
+      name: username
     }
-    delete req.session.oauth_state
-    delete req.session.oauth_nonce
+    delete req.session.challenge
     res.redirect('/dashboard')
-  } catch (e) {
-    next(e)
+  } catch (err) {
+    res.status(403).send('Invalid signature')
+  } finally {
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {})
   }
 })
 
@@ -148,7 +154,7 @@ async function processZipJob(jobId, username) {
   const timestamp = Date.now()
   const zipPath = path.join(baseDir, `${username}-${timestamp}.zip`)
   await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'processing', filePath: zipPath, progress: 0 } })
-  const srcDir = path.join('/home', username)
+  const srcDir = path.join(startdir, username)
   if (!fs.existsSync(srcDir)) {
     await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: 'source directory not found' } })
     return
@@ -174,7 +180,7 @@ async function processZipJob(jobId, username) {
 
 function hasActiveJob(job) {
   if (!job) return false
-  return job.status === 'queued' || job.status === 'processing'
+  return job.status === 'queued' || job.status === 'processing' || job.status === 'complete'
 }
 
 app.post('/zip/start', requireAuth, async (req, res) => {

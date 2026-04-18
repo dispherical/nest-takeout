@@ -1,0 +1,8 @@
+{% layout 'parent.liquid' %}
+{% block %}
+<h1>SSH Login</h1>
+<form method="POST" action="/auth/challenge">
+  <label>Username: <input type="text" name="username" required></label>
+  <button type="submit">Get Challenge</button>
+</form>
+{% endblock %}

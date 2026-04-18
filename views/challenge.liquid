@@ -1,0 +1,16 @@
+{% layout 'parent.liquid' %}
+{% block %}
+<h1>Sign Challenge</h1>
+<p>Run the following command in your terminal on your local machine containing your ssh key (if your key is not id_ed25519, change it):</p>
+<pre>
+echo -n "{{ challenge }}" | ssh-keygen -Y sign -n file -f ~/.ssh/id_ed25519 - &gt; signature.txt
+cat signature.txt
+</pre>
+<p>Paste the contents of signature.txt below:</p>
+<form method="POST" action="/auth/verify">
+  <input type="hidden" name="username" value="{{ username }}">
+  <input type="hidden" name="challenge" value="{{ challenge }}">
+  <textarea name="signature" rows="10" cols="80" required></textarea><br>
+  <button type="submit">Verify &amp; Login</button>
+</form>
+{% endblock %}

@@ -9,8 +9,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-session": "^1.18.2",
-    "liquidjs": "^10.22.0",
-    "openid-client": "5"
+    "liquidjs": "^10.22.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
