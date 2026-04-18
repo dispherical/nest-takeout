@@ -157,12 +157,16 @@ async function processZipJob(jobId, username) {
   const srcDir = path.join(startdir, username)
   if (!fs.existsSync(srcDir)) {
     await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: 'source directory not found' } })
+    console.error("source directory not found")
+    
     return
   }
   return new Promise((resolve) => {
     const zipProc = spawn('zip', ['-r', zipPath, '.'], { cwd: srcDir })
     zipProc.on('error', async (e) => {
       await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: String(e && e.message ? e.message : e) } })
+      console.error(`zip process error: ${e.message}`);
+      
       resolve()
     })
     zipProc.on('exit', async (code) => {
@@ -172,6 +176,7 @@ async function processZipJob(jobId, username) {
         await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'complete', progress: 100, completedAt: now, expiresAt: expires } })
       } else {
         await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: `zip exit code ${code}` } })
+        console.error(`zip exit code ${code}`);
       }
       resolve()
     })
