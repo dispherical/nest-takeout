@@ -233,6 +233,22 @@ async function processZipJob(job) {
           where: { id: jobId },
           data: { status: 'complete', progress: 100, completedAt: now, expiresAt: expires }
         })
+        try {
+          const fresh = await prisma.zipJob.findUnique({ where: { id: jobId } })
+          if (fresh?.email && !fresh.notifiedAt) {
+            await mail.sendCompletionEmail({
+              to: fresh.email,
+              username,
+              expiresAt: expires,
+            })
+            await prisma.zipJob.update({
+              where: { id: jobId },
+              data: { notifiedAt: new Date() }
+            })
+          }
+        } catch (e) {
+          console.error(`[mail] send failed for ${username}: ${e.message}`)
+        }
       } else {
         const reason = signal ? `killed by ${signal}` : `exit code ${code}`
         await prisma.zipJob.update({
@@ -254,9 +270,13 @@ function hasActiveJob(job) {
 app.post('/zip/start', requireAuth, async (req, res) => {
   const username = req.session.user.preferred_username
   if (!username) return res.redirect('/dashboard')
+  const email = (req.body.email || '').trim()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).send('Valid email required')
+  }
   const existing = await prisma.zipJob.findFirst({ where: { username }, orderBy: { createdAt: 'desc' } })
   if (hasActiveJob(existing)) return res.redirect('/dashboard')
-  await prisma.zipJob.create({ data: { username, status: 'queued', progress: 0 } })
+  await prisma.zipJob.create({ data: { username, email, status: 'queued', progress: 0 } })
   queue.tick()
   res.redirect('/dashboard')
 })
