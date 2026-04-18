@@ -49,6 +49,7 @@ model UserProfile {
 model ZipJob {
   id          String   @id @default(cuid())
   username    String
+  email       String?
   status      String
   progress    Int      @default(0)
   filePath    String?
@@ -56,6 +57,7 @@ model ZipJob {
   completedAt DateTime?
   expiresAt   DateTime?
   error       String?
+  notifiedAt  DateTime?
 
   @@index([username, status])
 }
