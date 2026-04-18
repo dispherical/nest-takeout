@@ -11,6 +11,10 @@
 {% if job == null or job.status == 'error' or job.status == 'expired' %}
   <div>
     <form method="post" action="/zip/start">
+      <p>
+        <label for="email">Email (we'll notify you when it's ready):</label><br>
+        <input type="email" id="email" name="email" required placeholder="you@example.com" size="40">
+      </p>
       <button type="submit">Create Home Archive</button>
     </form>
     {% if job.status == 'error' %}
