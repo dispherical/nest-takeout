@@ -8,29 +8,41 @@
   <a href="/logout">Logout</a>
 </div>
 
-<div>
-  <form method="post" action="/zip/start">
-    <button type="submit">Create Home ZIP</button>
-  </form>
-</div>
+{% if job == null or job.status == 'error' or job.status == 'expired' %}
+  <div>
+    <form method="post" action="/zip/start">
+      <button type="submit">Create Home Archive</button>
+    </form>
+    {% if job.status == 'error' %}
+      <p>Previous attempt failed: {{ job.error }}</p>
+    {% endif %}
+  </div>
 
-{% if job %}
-<div>
-  <p>Status: {{ job.status }}</p>
-  <p>Progress: {{ job.progress }}%</p>
-  {% if job.status == 'complete' %}
-  <a href="/zip/download">Download ZIP</a>
-  <p>Expires: {{ job.expiresAt }}</p>
+{% elsif job.status == 'queued' %}
+  <h2>You're in the queue</h2>
+  {% if position == 0 %}
+    <p><strong>Starting now…</strong></p>
+  {% elsif position == 1 %}
+    <p><strong>You're next</strong> — 1 job ahead of you.</p>
+  {% else %}
+    <p><strong>Position #{{ position | plus: 1 }} of {{ queueDepth }}</strong> — {{ position }} jobs ahead of you.</p>
   {% endif %}
-</div>
+  <p>We'll start your export automatically. You can close this tab and come back later.</p>
+
+{% elsif job.status == 'processing' %}
+  <h2>Exporting your files…</h2>
+  <p>Progress: {{ job.progress }}%</p>
+  <p>Large homes on spinning disks can take a while — no need to keep this tab open.</p>
+
+{% elsif job.status == 'complete' %}
+  <p>Status: ready to download</p>
+  <a href="/zip/download">Download archive</a>
+  <p>Expires: {{ job.expiresAt }}</p>
 {% endif %}
 
-{% if job %}
 {% if job.status == 'queued' or job.status == 'processing' %}
 <script>
-setTimeout(function(){ location.reload() }, 3000)
+  setTimeout(function(){ location.reload() }, 3000)
 </script>
 {% endif %}
-{% endif %}
-
 {% endblock %}
