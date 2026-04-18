@@ -2,10 +2,19 @@
 {% block %}
 <h1>Sign Challenge</h1>
 <p>Run the following command in your terminal on your local machine containing your ssh key (if your key is not id_ed25519, change it):</p>
+
+<h3>Linux / macOS</h3>
 <pre>
 echo -n "{{ challenge }}" | ssh-keygen -Y sign -n file -f ~/.ssh/id_ed25519 - &gt; signature.txt
 cat signature.txt
 </pre>
+
+<h3>Windows (cmd)</h3>
+<pre>
+echo|set /p="{{ challenge }}" | ssh-keygen -Y sign -n file -f %USERPROFILE%\.ssh\id_ed25519 - &gt; signature.txt
+type signature.txt
+</pre>
+
 <p>Paste the contents of signature.txt below:</p>
 <form method="POST" action="/auth/verify">
   <input type="hidden" name="username" value="{{ username }}">
