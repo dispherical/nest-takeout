@@ -14,6 +14,7 @@ const { spawn } = require('child_process')
 const util = require('util')
 const exec = util.promisify(require('child_process').exec)
 const queue = require('./queue')
+const mail = require('./mail')
 
 const startdir = "/mnt/oldnest/home"
 
