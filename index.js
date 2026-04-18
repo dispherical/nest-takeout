@@ -152,31 +152,62 @@ async function processZipJob(jobId, username) {
   const baseDir = path.join(process.cwd(), 'tmp', 'zips')
   await ensureDir(baseDir)
   const timestamp = Date.now()
-  const zipPath = path.join(baseDir, `${username}-${timestamp}.zip`)
-  await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'processing', filePath: zipPath, progress: 0 } })
+  const archivePath = path.join(baseDir, `${username}-${timestamp}.tar.gz`)
+  await prisma.zipJob.update({
+    where: { id: jobId },
+    data: { status: 'processing', filePath: archivePath, progress: 0 }
+  })
   const srcDir = path.join(startdir, username)
   if (!fs.existsSync(srcDir)) {
-    await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: 'source directory not found' } })
-    console.error("source directory not found")
-    
+    await prisma.zipJob.update({
+      where: { id: jobId },
+      data: { status: 'error', error: 'source directory not found' }
+    })
+    console.error('source directory not found')
     return
   }
   return new Promise((resolve) => {
-    const zipProc = spawn('zip', ['-r', zipPath, '.'], { cwd: srcDir })
-    zipProc.on('error', async (e) => {
-      await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: String(e && e.message ? e.message : e) } })
-      console.error(`zip process error: ${e.message}`);
-      
+    const tarProc = spawn('tar', [
+      '--exclude=node_modules',
+      '--exclude=.npm',
+      '--exclude=.yarn/cache',
+      '--exclude=.pnpm-store',
+      '--exclude=.bun/install/cache',
+      '--exclude=.cargo/registry',
+      '--exclude=.rustup',
+
+      '--exclude=__pycache__',
+      '--exclude=.venv',
+      '--exclude=venv',
+
+      '-czf', archivePath,
+      '-C', startdir, username
+    ])
+
+    tarProc.on('error', async (e) => {
+      await prisma.zipJob.update({
+        where: { id: jobId },
+        data: { status: 'error', error: String(e?.message || e) }
+      })
+      console.error(`tar process error: ${e.message}`)
       resolve()
     })
-    zipProc.on('exit', async (code) => {
+
+    tarProc.on('exit', async (code, signal) => {
       if (code === 0) {
         const now = new Date()
         const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-        await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'complete', progress: 100, completedAt: now, expiresAt: expires } })
+        await prisma.zipJob.update({
+          where: { id: jobId },
+          data: { status: 'complete', progress: 100, completedAt: now, expiresAt: expires }
+        })
       } else {
-        await prisma.zipJob.update({ where: { id: jobId }, data: { status: 'error', error: `zip exit code ${code}` } })
-        console.error(`zip exit code ${code}`);
+        const reason = signal ? `killed by ${signal}` : `exit code ${code}`
+        await prisma.zipJob.update({
+          where: { id: jobId },
+          data: { status: 'error', error: `tar ${reason}` }
+        })
+        console.error(`tar ${reason}`)
       }
       resolve()
     })
@@ -220,7 +251,7 @@ app.get('/zip/download', requireAuth, async (req, res) => {
     return res.redirect('/dashboard')
   }
   if (!fs.existsSync(job.filePath)) return res.redirect('/dashboard')
-  res.download(job.filePath, `${username}-home.zip`)
+  res.download(job.filePath, `${username}-home.tar.gz`)
 })
 
 async function cleanupExpiredZips() {
